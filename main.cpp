@@ -365,7 +365,8 @@ int delete_train(const string& trainID) {
 }
 
 string query_ticket(const string& fromStation, const string& toStation, const string& date, const string& sortBy) {
-    vector<string> results;
+    vector<pair<int, string>> timeResults; // {total_time_minutes, result_string}
+    vector<pair<int, string>> costResults; // {total_price, result_string}
 
     for (auto& trainPair : trains) {
         Train& train = trainPair.second;
@@ -402,10 +403,19 @@ string query_ticket(const string& fromStation, const string& toStation, const st
             continue;
         }
 
-        // Calculate price and time
+        // Calculate price
         int totalPrice = 0;
         for (int i = fromIndex; i < toIndex; i++) {
             totalPrice += train.prices[i];
+        }
+
+        // Calculate total travel time in minutes
+        int totalTime = 0;
+        for (int i = fromIndex; i < toIndex; i++) {
+            totalTime += train.travelTimes[i];
+            if (i < toIndex - 1 && i < train.stationNum - 2) {
+                totalTime += train.stopoverTimes[i];
+            }
         }
 
         // Parse start time
@@ -417,10 +427,6 @@ string query_ticket(const string& fromStation, const string& toStation, const st
         int currentDay = queryDay;
         int currentHour = startHour;
         int currentMin = startMin;
-
-        // Add days to reach departure date from starting station
-        int departureMonth = queryMonth;
-        int departureDay = queryDay;
 
         // Calculate arrival time at fromStation
         for (int i = 0; i < fromIndex; i++) {
@@ -481,28 +487,34 @@ string query_ticket(const string& fromStation, const string& toStation, const st
 
         string arrivalTime = formatTime(currentMonth, currentDay, currentHour, currentMin);
 
+        // Find minimum available seats for this segment
+        int minSeats = train.seatNum;
+        if (train.seatAvailability.find(date) != train.seatAvailability.end()) {
+            for (int i = fromIndex; i < toIndex; i++) {
+                minSeats = min(minSeats, train.seatAvailability[date][i]);
+            }
+        }
+
         // Format result
-        string result = train.trainID + " " + fromStation + " " + departureTime + " -> " + toStation + " " + arrivalTime + " " + to_string(totalPrice) + " " + to_string(train.seatNum);
-        results.push_back(result);
+        string result = train.trainID + " " + fromStation + " " + departureTime + " -> " + toStation + " " + arrivalTime + " " + to_string(totalPrice) + " " + to_string(minSeats);
+
+        if (sortBy == "time") {
+            timeResults.push_back({totalTime, result});
+        } else {
+            costResults.push_back({totalPrice, result});
+        }
     }
 
     // Sort results
+    vector<string> results;
     if (sortBy == "time") {
-        // Sort by time (lexicographic order of time strings should work)
-        sort(results.begin(), results.end());
-    } else if (sortBy == "cost") {
-        // Sort by price - extract price and sort
-        vector<pair<int, string>> pricedResults;
-        for (const string& result : results) {
-            istringstream iss(result);
-            string trainID, from, depTime, arrow, to, arrTime;
-            int price, seats;
-            iss >> trainID >> from >> depTime >> arrow >> to >> arrTime >> price >> seats;
-            pricedResults.push_back({price, result});
+        sort(timeResults.begin(), timeResults.end());
+        for (const auto& p : timeResults) {
+            results.push_back(p.second);
         }
-        sort(pricedResults.begin(), pricedResults.end());
-        results.clear();
-        for (const auto& p : pricedResults) {
+    } else {
+        sort(costResults.begin(), costResults.end());
+        for (const auto& p : costResults) {
             results.push_back(p.second);
         }
     }
@@ -518,8 +530,7 @@ string query_ticket(const string& fromStation, const string& toStation, const st
 }
 
 string query_transfer(const string& fromStation, const string& toStation, const string& date, const string& sortBy) {
-    // Find all possible transfer combinations
-    vector<pair<string, string>> transfers;
+    vector<tuple<int, int, string, string>> transfers; // {total_time, total_price, train1_info, train2_info}
 
     for (auto& train1Pair : trains) {
         Train& train1 = train1Pair.second;
@@ -556,13 +567,153 @@ string query_transfer(const string& fromStation, const string& toStation, const 
                 }
                 if (transferIndex2 == -1 || toIndex2 == -1 || transferIndex2 >= toIndex2) continue;
 
-                // Calculate if transfer is possible (simplified - just check if it's the same date)
-                // In reality, would need to check if arrival at transfer is before departure from transfer
+                // Calculate times for train1
+                int startHour1, startMin1;
+                sscanf(train1.startTime.c_str(), "%d:%d", &startHour1, &startMin1);
 
-                // Add this transfer combination
-                string train1Info = train1.trainID + " " + fromStation + " -> " + transferStation;
-                string train2Info = train2.trainID + " " + transferStation + " -> " + toStation;
-                transfers.push_back({train1Info, train2Info});
+                int currentMonth1 = 6, currentDay1 = 1; // Start from sale start date
+                int currentHour1 = startHour1;
+                int currentMin1 = startMin1;
+
+                // Calculate arrival time at transfer station for train1
+                for (int i = 0; i < transferIndex; i++) {
+                    currentMin1 += train1.travelTimes[i];
+                    currentHour1 += currentMin1 / 60;
+                    currentMin1 %= 60;
+                    currentDay1 += currentHour1 / 24;
+                    currentHour1 %= 24;
+
+                    if (currentMonth1 == 6 && currentDay1 > 30) {
+                        currentMonth1 = 7;
+                        currentDay1 -= 30;
+                    } else if (currentMonth1 == 7 && currentDay1 > 31) {
+                        currentMonth1 = 8;
+                        currentDay1 -= 31;
+                    }
+                }
+
+                // Calculate times for train2
+                int startHour2, startMin2;
+                sscanf(train2.startTime.c_str(), "%d:%d", &startHour2, &startMin2);
+
+                int currentMonth2 = 6, currentDay2 = 1; // Start from sale start date
+                int currentHour2 = startHour2;
+                int currentMin2 = startMin2;
+
+                // Calculate departure time from transfer station for train2
+                for (int i = 0; i < transferIndex2; i++) {
+                    currentMin2 += train2.travelTimes[i];
+                    currentHour2 += currentMin2 / 60;
+                    currentMin2 %= 60;
+                    currentDay2 += currentHour2 / 24;
+                    currentHour2 %= 24;
+
+                    if (currentMonth2 == 6 && currentDay2 > 30) {
+                        currentMonth2 = 7;
+                        currentDay2 -= 30;
+                    } else if (currentMonth2 == 7 && currentDay2 > 31) {
+                        currentMonth2 = 8;
+                        currentDay2 -= 31;
+                    }
+
+                    if (i < train2.stationNum - 2) {
+                        currentMin2 += train2.stopoverTimes[i];
+                        currentHour2 += currentMin2 / 60;
+                        currentMin2 %= 60;
+                        currentDay2 += currentHour2 / 24;
+                        currentHour2 %= 24;
+
+                        if (currentMonth2 == 6 && currentDay2 > 30) {
+                            currentMonth2 = 7;
+                            currentDay2 -= 30;
+                        } else if (currentMonth2 == 7 && currentDay2 > 31) {
+                            currentMonth2 = 8;
+                            currentDay2 -= 31;
+                        }
+                    }
+                }
+
+                // Check if transfer is possible (train2 departs after train1 arrives)
+                int arrival1 = currentMonth1 * 10000 + currentDay1 * 100 + currentHour1 * 60 + currentMin1;
+                int departure2 = currentMonth2 * 10000 + currentDay2 * 100 + currentHour2 * 60 + currentMin2;
+
+                if (arrival1 > departure2) continue;
+
+                // Calculate total time and price
+                int totalTime = 0;
+                int totalPrice = 0;
+
+                // Time and price for train1 segment
+                for (int i = fromIndex1; i < transferIndex; i++) {
+                    totalTime += train1.travelTimes[i];
+                    totalPrice += train1.prices[i];
+                    if (i < transferIndex - 1) {
+                        totalTime += train1.stopoverTimes[i];
+                    }
+                }
+
+                // Time and price for train2 segment
+                for (int i = transferIndex2; i < toIndex2; i++) {
+                    totalTime += train2.travelTimes[i];
+                    totalPrice += train2.prices[i];
+                    if (i < toIndex2 - 1) {
+                        totalTime += train2.stopoverTimes[i];
+                    }
+                }
+
+                // Format train1 info
+                string depTime1 = formatTime(6, 1, startHour1, startMin1);
+                string arrTime1 = formatTime(currentMonth1, currentDay1, currentHour1, currentMin1);
+                int price1 = 0;
+                for (int i = fromIndex1; i < transferIndex; i++) {
+                    price1 += train1.prices[i];
+                }
+                int minSeats1 = train1.seatNum;
+                if (train1.seatAvailability.find(date) != train1.seatAvailability.end()) {
+                    for (int i = fromIndex1; i < transferIndex; i++) {
+                        minSeats1 = min(minSeats1, train1.seatAvailability[date][i]);
+                    }
+                }
+                string train1Info = train1.trainID + " " + fromStation + " " + depTime1 + " -> " + transferStation + " " + arrTime1 + " " + to_string(price1) + " " + to_string(minSeats1);
+
+                // Format train2 info
+                string depTime2 = formatTime(currentMonth2, currentDay2, currentHour2, currentMin2);
+
+                // Calculate arrival time at destination
+                for (int i = transferIndex2; i < toIndex2; i++) {
+                    currentMin2 += train2.travelTimes[i];
+                    currentHour2 += currentMin2 / 60;
+                    currentMin2 %= 60;
+                    currentDay2 += currentHour2 / 24;
+                    currentHour2 %= 24;
+
+                    if (currentMonth2 == 6 && currentDay2 > 30) {
+                        currentMonth2 = 7;
+                        currentDay2 -= 30;
+                    } else if (currentMonth2 == 7 && currentDay2 > 31) {
+                        currentMonth2 = 8;
+                        currentDay2 -= 31;
+                    }
+                }
+                string arrTime2 = formatTime(currentMonth2, currentDay2, currentHour2, currentMin2);
+
+                int price2 = 0;
+                for (int i = transferIndex2; i < toIndex2; i++) {
+                    price2 += train2.prices[i];
+                }
+                int minSeats2 = train2.seatNum;
+                if (train2.seatAvailability.find(date) != train2.seatAvailability.end()) {
+                    for (int i = transferIndex2; i < toIndex2; i++) {
+                        minSeats2 = min(minSeats2, train2.seatAvailability[date][i]);
+                    }
+                }
+                string train2Info = train2.trainID + " " + transferStation + " " + depTime2 + " -> " + toStation + " " + arrTime2 + " " + to_string(price2) + " " + to_string(minSeats2);
+
+                if (sortBy == "time") {
+                    transfers.push_back({totalTime, 0, train1Info, train2Info});
+                } else {
+                    transfers.push_back({0, totalPrice, train1Info, train2Info});
+                }
             }
         }
     }
@@ -571,9 +722,18 @@ string query_transfer(const string& fromStation, const string& toStation, const 
         return "0";
     }
 
-    // For simplicity, just return the first transfer found
-    // In a real implementation, would sort by time or cost
-    string result = transfers[0].first + "\n" + transfers[0].second;
+    // Sort transfers
+    if (sortBy == "time") {
+        sort(transfers.begin(), transfers.end());
+    } else {
+        sort(transfers.begin(), transfers.end(),
+             [](const auto& a, const auto& b) {
+                 return get<1>(a) < get<1>(b);
+             });
+    }
+
+    // Return the best transfer
+    string result = get<2>(transfers[0]) + "\n" + get<3>(transfers[0]);
     return result;
 }
 
@@ -612,14 +772,17 @@ int buy_ticket(const string& username, const string& trainID, const string& date
         return -1;
     }
 
+    // Initialize seat availability if not exists
+    if (train.seatAvailability.find(date) == train.seatAvailability.end()) {
+        train.seatAvailability[date] = vector<int>(train.stationNum - 1, train.seatNum);
+    }
+
     // Check seat availability
     bool hasEnoughSeats = true;
     for (int i = fromIndex; i < toIndex; i++) {
-        if (train.seatAvailability.find(date) != train.seatAvailability.end()) {
-            if (train.seatAvailability[date][i] < num) {
-                hasEnoughSeats = false;
-                break;
-            }
+        if (train.seatAvailability[date][i] < num) {
+            hasEnoughSeats = false;
+            break;
         }
     }
 
@@ -652,10 +815,6 @@ int buy_ticket(const string& username, const string& trainID, const string& date
     totalPrice *= num;
 
     // Update seat availability
-    if (train.seatAvailability.find(date) == train.seatAvailability.end()) {
-        train.seatAvailability[date] = vector<int>(train.stationNum - 1, train.seatNum);
-    }
-
     for (int i = fromIndex; i < toIndex; i++) {
         train.seatAvailability[date][i] -= num;
     }
@@ -867,14 +1026,20 @@ int main() {
             string cur_username, username, password, name, mailAddr;
             int privilege = -1;
             string arg;
+            bool hasCur = false;
 
             while (iss >> arg) {
-                if (arg == "-c") iss >> cur_username;
+                if (arg == "-c") { iss >> cur_username; hasCur = true; }
                 else if (arg == "-u") iss >> username;
                 else if (arg == "-p") iss >> password;
                 else if (arg == "-n") iss >> name;
                 else if (arg == "-m") iss >> mailAddr;
                 else if (arg == "-g") iss >> privilege;
+            }
+
+            // If creating first user and no -c parameter, set privilege to 10
+            if (users.empty() && !hasCur) {
+                privilege = 10;
             }
 
             int result = add_user(cur_username, username, password, name, mailAddr, privilege);
