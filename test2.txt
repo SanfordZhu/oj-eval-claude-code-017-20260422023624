@@ -1,0 +1,3 @@
+add_user -u root -p 123456 -n 管理员 -m admin@example.com -g 10
+add_user -c root -u user1 -p password1 -n 用户一 -m user1@example.com -g 5
+exit

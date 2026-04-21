@@ -1,0 +1,2 @@
+add_user -u root -p 123456 -n 管理员 -m admin@example.com -g 10
+exit
